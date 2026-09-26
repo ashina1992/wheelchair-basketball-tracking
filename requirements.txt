@@ -1,0 +1,4 @@
+# CPU版torchは先に入れる:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+# 依存パッケージは pyproject.toml に記載。wbt パッケージを編集可能モードで入れる
+-e .
