@@ -1,0 +1,11 @@
+.venv
+.git
+**/__pycache__
+**/*.egg-info
+data
+runs
+storage
+notebooks
+tests
+*.mp4
+*.pt

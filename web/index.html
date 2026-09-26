@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>車いすバスケ スタッツ・トラッキング</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>車いすバスケ スタッツ・トラッキング</h1>
+    <div class="controls">
+      <label>解析結果
+        <select id="job-select"></select>
+      </label>
+      <button id="upload-open" type="button">動画を解析</button>
+    </div>
+  </header>
+
+  <dialog id="upload-dialog">
+    <form id="upload-form" method="dialog">
+      <h2>試合動画をアップロード</h2>
+      <p class="note">広角の中継映像(1920x1080 推奨)。会場プロファイルは、校正済みの会場から選びます。</p>
+      <label>動画ファイル <input type="file" name="video" accept="video/mp4,video/quicktime,video/webm,.mkv" required></label>
+      <label>会場プロファイル <select name="profile" id="profile-select"></select></label>
+      <div class="dialog-actions">
+        <button type="button" id="upload-cancel">キャンセル</button>
+        <button type="submit" class="primary">アップロード</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="job-progress" class="progress" hidden>
+    <div class="progress-label"></div>
+    <div class="bar"><div class="fill"></div></div>
+  </div>
+
+  <main id="result" hidden>
+    <section class="player-col">
+      <div class="video-wrap">
+        <video id="video" controls playsinline></video>
+        <canvas id="overlay"></canvas>
+        <div id="no-video" class="no-video" hidden>この解析結果には動画がありません(解析データのみ表示)</div>
+      </div>
+      <div class="player-opts">
+        <label><input type="checkbox" id="show-overlay" checked> 検出結果を重ねる</label>
+        <span id="clock" class="clock"></span>
+      </div>
+
+      <div class="court-panel">
+        <div class="tabs" role="tablist">
+          <button role="tab" data-tab="live" class="active">現在位置</button>
+          <button role="tab" data-tab="shots">ショットチャート</button>
+          <button role="tab" data-tab="heat">ヒートマップ</button>
+          <button role="tab" data-tab="spacing">スペーシング</button>
+        </div>
+        <div class="tab-opts" id="heat-opts" hidden>
+          <label><input type="radio" name="heat-team" value="a" checked> <span class="team-a-name"></span></label>
+          <label><input type="radio" name="heat-team" value="b"> <span class="team-b-name"></span></label>
+        </div>
+        <svg id="court" viewBox="-15 -8.5 30 17" preserveAspectRatio="xMidYMid meet"></svg>
+        <div id="spacing-table" hidden></div>
+        <p class="legend" id="court-legend"></p>
+      </div>
+    </section>
+
+    <aside class="side-col">
+      <section class="card">
+        <h2>チームスタッツ</h2>
+        <table id="stats-table"></table>
+        <p class="note" id="stats-note"></p>
+      </section>
+      <section class="card events-card">
+        <h2>イベント <span class="count" id="event-count"></span></h2>
+        <div class="filters" id="event-filters"></div>
+        <ol id="event-list"></ol>
+      </section>
+      <section class="card meta-card">
+        <h2>解析情報</h2>
+        <dl id="meta"></dl>
+        <p class="downloads"><a id="dl-stats">stats.csv</a> <a id="dl-events">events.csv</a> <a id="dl-json">analysis.json</a></p>
+      </section>
+    </aside>
+  </main>
+
+  <p id="empty" class="empty" hidden>解析結果がありません。「動画を解析」から試合動画をアップロードしてください。</p>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

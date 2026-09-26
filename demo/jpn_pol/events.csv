@@ -1,0 +1,3 @@
+id,t,type,team,points,player,source,confidence
+1,22.65,made_shot,JPN,2,,scoreboard,0.8
+2,47.84,made_shot,POL,2,,scoreboard,0.8
