@@ -100,6 +100,9 @@ Webアプリとして完結させる(エッジ推論は不要)。
 全体計画・進捗・次のタスクは `docs/plan.md` を参照(ここには重複して書かない)。
 
 - 開発環境: `.venv`(Python 3.11、CPU版torch、ultralytics)。ローカルにGPUはないため推論はCPU、学習は Colab / Kaggle のGPUを使う。バージョンは `requirements.lock.txt`
+- コードの入口: 解析パイプラインは `src/wbt/pipeline.py`、API は `src/wbt/api/app.py`、フロントは `web/`。使い方は `README.md`
+- テスト: `.venv\Scripts\python.exe -m pytest`(変更後は必ず通す)
+- 試合映像・学習データ(`*.mp4`, `data/`, `runs/`, `storage/`)は Git に入れない
 
 ## 参照元ドキュメント(会話に添付されたもの)
 
