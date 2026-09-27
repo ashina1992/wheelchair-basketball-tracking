@@ -67,6 +67,17 @@ def test_is_wide_shot():
     assert not is_wide_shot(sideline, 1080)
 
 
+def test_split_groups_multi_file_recordings(tmp_path):
+    """前半・後半を別ファイルで録画した試合(_1, _2)は、試合名の指定でまとめて同じ分割に入る。"""
+    src = tmp_path / "src"
+    (src / "images").mkdir(parents=True)
+    for stem in ("usa_jpn_1_000010", "usa_jpn_2_000010", "usa_jpn_10_000010", "usa_jpnx_1_000010"):
+        (src / "images" / f"{stem}.jpg").write_bytes(b"jpg")
+    counts = split_by_game(src, tmp_path / "out", val_games=[], test_games=["usa_jpn"])
+    assert counts == {"train": 1, "val": 0, "test": 3}
+    assert (tmp_path / "out" / "images" / "train" / "usa_jpnx_1_000010.jpg").exists()
+
+
 def test_cvat_export_import_and_split(tmp_path):
     raw = tmp_path / "raw"
     (raw / "images").mkdir(parents=True)

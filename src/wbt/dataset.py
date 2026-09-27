@@ -5,6 +5,7 @@ CVAT には「YOLO 1.1」形式として読み込み・書き出しできる構�
 obj_train_data/)で出力する。
 """
 import random
+import re
 import shutil
 import zipfile
 from pathlib import Path
@@ -128,12 +129,21 @@ def import_cvat_yolo(zip_path: Path, images_dir: Path, out_dir: Path) -> int:
     return n
 
 
+def _matches(game: str, names: list[str]) -> bool:
+    """game が names のどれかと一致するか、その後に "_<番号>" が付いた名前か。
+
+    1試合を前半・後半など複数ファイルに分けて録画した場合(Japan_v_Poland_men_1, _2)も、
+    "Japan_v_Poland_men" と指定すれば同じ試合としてまとめて扱える。
+    """
+    return any(game == n or (game.startswith(n + "_") and game[len(n) + 1:].isdigit()) for n in names)
+
+
 def split_by_game(src_dir: Path, out_dir: Path, val_games: list[str], test_games: list[str]) -> dict:
     """ファイル名の先頭(<game>_)で試合を判別し、試合単位で train/val/test に分けて data.yaml を作る。"""
     counts = {"train": 0, "val": 0, "test": 0}
     for img in sorted((src_dir / "images").glob("*.jpg")):
         game = img.stem.rsplit("_", 1)[0]
-        split = "test" if game in test_games else "val" if game in val_games else "train"
+        split = "test" if _matches(game, test_games) else "val" if _matches(game, val_games) else "train"
         for sub, ext in (("images", ".jpg"), ("labels", ".txt")):
             src = src_dir / sub / f"{img.stem}{ext}"
             dst = out_dir / sub / split / src.name
@@ -149,10 +159,14 @@ def split_by_game(src_dir: Path, out_dir: Path, val_games: list[str], test_games
 
 
 def sample_for_annotation(src_dir: Path, n: int, seed: int = 0) -> list[Path]:
-    """アノテーション対象を n 枚選ぶ(試合ごとに均等になるように)。"""
+    """アノテーション対象を n 枚選ぶ(試合ごとに均等になるように)。
+
+    前半・後半など複数ファイルに分けて録画した試合(<game>_1, <game>_2)は1試合として数える。
+    """
     by_game: dict[str, list[Path]] = {}
     for img in sorted((src_dir / "images").glob("*.jpg")):
-        by_game.setdefault(img.stem.rsplit("_", 1)[0], []).append(img)
+        game = re.sub(r"_\d+$", "", img.stem.rsplit("_", 1)[0])
+        by_game.setdefault(game, []).append(img)
     rng = random.Random(seed)
     per = max(1, n // max(1, len(by_game)))
     out = []
