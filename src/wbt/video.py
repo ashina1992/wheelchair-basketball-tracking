@@ -7,11 +7,17 @@ import numpy as np
 Box = tuple[int, int, int, int]  # x0, y0, x1, y1
 
 
-def detect_content_box(cap: cv2.VideoCapture, n_samples: int = 12, ratio: float = 0.3) -> Box:
-    """時間方向の変化が小さい行・列を帯とみなし、映像領域 (x0, y0, x1, y1) を返す。
+BAR_SPATIAL_STD = 15.0   # 帯とみなす行・列の、行(列)内の画素値の標準偏差の上限
 
-    画面録画の帯は純黒とは限らず(グラデーションのグレー、フェード等)明るさも変わるため、
-    サンプルフレーム間の画素値の標準偏差が全体の中央値の ratio 倍未満の行・列を帯とする。
+
+def detect_content_box(cap: cv2.VideoCapture, n_samples: int = 12, ratio: float = 0.3) -> Box:
+    """画面録画の帯を除いた映像領域 (x0, y0, x1, y1) を返す。
+
+    帯は「時間方向の変化が小さい」かつ「行(列)の中でほぼ一様」な行・列とする。
+    - 帯は純黒とは限らず(グラデーションのグレー、フェード等)明るさも変わるため、時間方向の変化は
+      サンプルフレーム間の標準偏差が全体の中央値の ratio 倍未満かどうかで判定する
+    - 観客席のように時間方向にはほとんど変化しないが、行の中では模様がある領域を帯と誤判定しないよう、
+      行(列)内の標準偏差も見る
     """
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     grays = []
@@ -23,10 +29,15 @@ def detect_content_box(cap: cv2.VideoCapture, n_samples: int = 12, ratio: float 
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
     if len(grays) < 2:
         raise RuntimeError("フレームを読み込めませんでした")
-    tstd = np.stack(grays).std(axis=0)
+    stack = np.stack(grays)
+    tstd = stack.std(axis=0)
     row_v, col_v = tstd.mean(axis=1), tstd.mean(axis=0)
-    rows = np.where(row_v > ratio * np.median(row_v))[0]
-    cols = np.where(col_v > ratio * np.median(col_v))[0]
+    # 行(列)内の一様さはフレームごとに測る(平均画像ではカメラの動きで模様がぼけて一様に見えるため)
+    row_s = np.median(stack.std(axis=2), axis=0)
+    col_s = np.median(stack.std(axis=1), axis=0)
+    row_content = (row_v > ratio * np.median(row_v)) | (row_s > BAR_SPATIAL_STD)
+    col_content = (col_v > ratio * np.median(col_v)) | (col_s > BAR_SPATIAL_STD)
+    rows, cols = np.where(row_content)[0], np.where(col_content)[0]
     return int(cols[0]), int(rows[0]), int(cols[-1]) + 1, int(rows[-1]) + 1
 
 

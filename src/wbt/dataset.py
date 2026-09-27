@@ -42,11 +42,47 @@ def read_yolo_labels(path: Path, w: int, h: int) -> list[tuple[int, np.ndarray]]
     return out
 
 
-def prelabel(det, frame_shape) -> list[tuple[str, np.ndarray]]:
-    """既製モデルの検出を下書きラベルにする。立っている人物は referee とする(修正前提の下書き)。"""
+RIM_BOX_PX = (80.0, 24.0)   # キーフレーム上でのリングの見かけの大きさ(幅, 高さ、1920x1080 基準)
+COURT_MARGIN = 1.0          # コート外周からこの距離(m)以内の人物だけを下書きに残す
+
+
+def prelabel(det, frame: np.ndarray, profile=None) -> list[tuple[str, np.ndarray]]:
+    """検出結果を下書きラベルにする(アノテーターが修正する前提)。
+
+    - 立っている人物(箱が縦長)は referee とする
+    - profile(会場プロファイル)を渡し、フレームがその会場のキーフレームに照合できた場合は、
+      コート外の人物(ベンチ・観客)を除き、リングの箱を校正結果から入れる
+    """
+    h, w = frame.shape[:2]
+    court_ok = lambda b: True   # noqa: E731
+    cam_rims: list[np.ndarray] = []
+    if profile is not None and profile.keyframes:
+        from .camera import CameraTracker
+        from .court import court_outline
+
+        s = profile.frame_size[0] / w   # 会場プロファイルの座標系(例: 1920 幅)への倍率
+        small = cv2.resize(frame, tuple(profile.frame_size)) if s != 1 else frame
+        cam = CameraTracker(profile.keyframes)
+        exclude = [tuple(b * s) for b in det.players.xyxy] + [tuple(v) for v in profile.scoreboard.values()]
+        st = cam.update(small, exclude=exclude, cut=True)
+        if st.valid:
+            outline = np.float32(court_outline(COURT_MARGIN))
+
+            def court_ok(b):   # noqa: F811
+                foot = np.array([[(b[0] + b[2]) / 2 * s, b[3] * s]])
+                X, Y = cam.img_to_court(st, foot)[0]
+                return cv2.pointPolygonTest(outline, (float(X), float(Y)), False) >= 0
+
+            if not len(det.rims):
+                zoom = cam.zoom(st)
+                rw, rh = RIM_BOX_PX[0] * zoom / s, RIM_BOX_PX[1] * zoom / s
+                for cx, cy in cam.rims_in_frame(st)[0] / s:
+                    if 0 <= cx < w and 0 <= cy < h:
+                        cam_rims.append(np.array([cx - rw / 2, cy - rh / 2, cx + rw / 2, cy + rh / 2]))
+
     boxes = []
     for b, c in zip(det.players.xyxy, det.players.conf):
-        if c < 0.3:
+        if c < 0.3 or not court_ok(b):
             continue
         aspect = (b[3] - b[1]) / max(b[2] - b[0], 1.0)
         boxes.append(("referee" if aspect > STANDING_ASPECT else "player", b))
@@ -55,9 +91,24 @@ def prelabel(det, frame_shape) -> list[tuple[str, np.ndarray]]:
             boxes.append(("ball", b[:4]))
     for b in det.rims:
         boxes.append(("rim", b[:4]))
+    boxes += [("rim", b) for b in cam_rims]
     for b in det.referees:
-        boxes.append(("referee", b[:4]))
+        if court_ok(b[:4]):
+            boxes.append(("referee", b[:4]))
     return boxes
+
+
+def relabel(images: list[Path], labels_dir: Path, weights: str, profile=None, progress=None) -> int:
+    """images の下書きラベルを、指定したモデル(と会場プロファイル)で作り直して labels_dir に書く。"""
+    det = Detector(weights)
+    labels_dir.mkdir(parents=True, exist_ok=True)
+    for k, p in enumerate(images):
+        img = cv2.imread(str(p))
+        lines = to_yolo_lines(prelabel(det(img), img, profile), img.shape[1], img.shape[0])
+        (labels_dir / f"{p.stem}.txt").write_text("\n".join(lines) + ("\n" if lines else ""))
+        if progress:
+            progress(k + 1, len(images))
+    return len(images)
 
 
 def extract_candidates(video: Path, out_dir: Path, game: str, every_sec: float = 2.0,
@@ -85,7 +136,7 @@ def extract_candidates(video: Path, out_dir: Path, game: str, every_sec: float =
             continue
         stem = f"{game}_{idx:06d}"
         cv2.imwrite(str(out_dir / "images" / f"{stem}.jpg"), frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
-        lines = to_yolo_lines(prelabel(det, frame.shape), frame.shape[1], frame.shape[0])
+        lines = to_yolo_lines(prelabel(det, frame), frame.shape[1], frame.shape[0])
         (out_dir / "labels" / f"{stem}.txt").write_text("\n".join(lines) + ("\n" if lines else ""))
         n += 1
     cap.release()
@@ -158,13 +209,16 @@ def split_by_game(src_dir: Path, out_dir: Path, val_games: list[str], test_games
     return counts
 
 
-def sample_for_annotation(src_dir: Path, n: int, seed: int = 0) -> list[Path]:
+def sample_for_annotation(src_dir: Path, n: int, seed: int = 0, exclude: set[str] = frozenset()) -> list[Path]:
     """アノテーション対象を n 枚選ぶ(試合ごとに均等になるように)。
 
     前半・後半など複数ファイルに分けて録画した試合(<game>_1, <game>_2)は1試合として数える。
+    exclude に含まれるファイル名(拡張子なし)は選ばない(前の回ですでにアノテーションした画像)。
     """
     by_game: dict[str, list[Path]] = {}
     for img in sorted((src_dir / "images").glob("*.jpg")):
+        if img.stem in exclude:
+            continue
         game = re.sub(r"_\d+$", "", img.stem.rsplit("_", 1)[0])
         by_game.setdefault(game, []).append(img)
     rng = random.Random(seed)

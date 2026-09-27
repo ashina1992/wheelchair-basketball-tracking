@@ -13,7 +13,11 @@ import numpy as np
 
 FEATURE_SCALE = 0.5      # 特徴点抽出時の縮小率(速度のため)
 MIN_INLIERS_CHAIN = 40   # 隣接フレーム間の照合に必要なインライア数
-MIN_INLIERS_ANCHOR = 30  # キーフレームへの照合に必要なインライア数
+MIN_INLIERS_ANCHOR = 50  # キーフレームへの照合に必要なインライア数
+# 30 では、同じ大会の看板が映る別会場の映像が誤って照合された(33点)。正しい照合は 56 点以上だった
+MIN_ANCHOR_SPREAD = 0.10  # キーフレームへの照合で、インライアの凸包が画像に占める面積の下限
+# 別会場でも、センターサークルの大会ロゴ(床に描かれた平面)だけで 50 点照合されることがあった。
+# ロゴは平面なのでホモグラフィとしては整合してしまうため、インライアが画像全体に散らばっているかで判定する
 REANCHOR_EVERY = 15      # この回数ごとにキーフレームへ直接照合し直してドリフトを抑える
 
 
@@ -64,20 +68,33 @@ class FeatureExtractor:
         pts = np.float32([k.pt for k in kps]) / FEATURE_SCALE
         return Features(pts, desc)
 
-    def match(self, a: Features, b: Features) -> tuple[np.ndarray | None, int]:
-        """a の画像座標 → b の画像座標のホモグラフィとインライア数を返す。"""
+    def match(self, a: Features, b: Features, return_inliers: bool = False):
+        """a の画像座標 → b の画像座標のホモグラフィとインライア数を返す。
+
+        return_inliers=True のときは、a 側のインライアの座標 (K, 2) も返す。
+        """
+        fail = (None, 0, np.zeros((0, 2), np.float32)) if return_inliers else (None, 0)
         if len(a.pts) < 8 or len(b.pts) < 8:
-            return None, 0
+            return fail
         pairs = self.matcher.knnMatch(a.desc, b.desc, k=2)
         good = [m for m, n in (p for p in pairs if len(p) == 2) if m.distance < 0.75 * n.distance]
         if len(good) < 8:
-            return None, 0
+            return fail
         src = a.pts[[m.queryIdx for m in good]]
         dst = b.pts[[m.trainIdx for m in good]]
         H, inl = cv2.findHomography(src, dst, cv2.RANSAC, 4.0)
         if H is None:
-            return None, 0
+            return fail
+        if return_inliers:
+            return H, int(inl.sum()), src[inl.ravel().astype(bool)]
         return H, int(inl.sum())
+
+
+def inlier_spread(pts: np.ndarray, frame_area: float) -> float:
+    """インライアの凸包の面積が画像に占める割合。"""
+    if len(pts) < 3:
+        return 0.0
+    return float(cv2.contourArea(cv2.convexHull(np.float32(pts)))) / frame_area
 
 
 class CameraTracker:
@@ -96,12 +113,15 @@ class CameraTracker:
     def reset(self):
         self.prev, self.state, self.since_anchor = None, CameraState(), 0
 
-    def _anchor(self, cur: Features) -> CameraState:
+    def _anchor(self, cur: Features, frame_area: float) -> CameraState:
         best = CameraState()
         for i, kf in enumerate(self.keyframes):
-            H, n = self.fx.match(cur, kf.features)
-            if H is not None and n >= MIN_INLIERS_ANCHOR and n > best.inliers:
-                best = CameraState(i, H, n, True)
+            H, n, pts = self.fx.match(cur, kf.features, return_inliers=True)
+            if H is None or n < MIN_INLIERS_ANCHOR or n <= best.inliers:
+                continue
+            if inlier_spread(pts, frame_area) < MIN_ANCHOR_SPREAD:
+                continue
+            best = CameraState(i, H, n, True)
         return best
 
     def update(self, frame: np.ndarray, exclude=(), cut: bool = False) -> CameraState:
@@ -109,7 +129,7 @@ class CameraTracker:
         st = CameraState()
         need_anchor = cut or not self.state.valid or self.since_anchor >= REANCHOR_EVERY
         if need_anchor:
-            st = self._anchor(cur)
+            st = self._anchor(cur, frame.shape[0] * frame.shape[1])
         if not st.valid and self.state.valid and not cut and self.prev is not None:
             H, n = self.fx.match(cur, self.prev)   # 現フレーム → 前フレーム
             if H is not None and n >= MIN_INLIERS_CHAIN:

@@ -33,12 +33,20 @@
 
 ## 作業手順(CVAT)
 
+2回に分けて進める。1回目の100枚で学習したモデルに2回目の下書きを作らせ、修正の手間を減らす。
+
+**1回目(100枚)**
 1. `python scripts/prepare_dataset.py extract <video> --game <試合名> --out data/dataset/raw` を試合ごとに実行する
-2. `python scripts/prepare_dataset.py cvat-export data/dataset/raw --n 300 --zip data/dataset/cvat_batch1.zip`
-3. CVAT でタスクを作成し、ラベルを `player`, `ball`, `rim`, `referee` の順で定義して、`data/dataset/cvat_batch1/` の画像をアップロードする
-4. 「Upload annotations」で `cvat_batch1.zip` を「YOLO 1.1」として読み込む(既製モデルの下書きが入る)
-5. 下書きを修正する。特に: 車いすまで含めて箱を広げる、ボールを追加する、リングを追加する、ベンチ・観客の箱を消す
-6. 「Export task dataset」で「YOLO 1.1」を選んで書き出し、`cvat-import` で取り込む
+2. `python scripts/prepare_dataset.py cvat-export data/dataset/raw --n 100 --zip data/dataset/cvat_batch1.zip --weights yolov8x.pt --profile ottawa2026`
+   - 下書き: 選手は yolov8x、審判は箱の形(縦長)で判定。会場プロファイルに照合できたフレーム(Ottawa のメイン会場)は、コート外の人物を除き、リングを校正結果から入れる
+3. CVAT でプロジェクトを作り、ラベルを `player`, `ball`, `rim`, `referee` の**この順で**定義する。タスクを作成して `data/dataset/cvat_batch1/` の画像をアップロードする
+4. 「Upload annotations」で `cvat_batch1.zip` を「YOLO 1.1」として読み込む
+5. 下書きを修正する。特に: 選手の箱を車輪の接地点まで広げる、ボールを追加する、別会場のフレームにリングを追加する、ベンチ・観客・カメラマンの箱を消す、`referee` と `player` の取り違えを直す
+6. 「Export task dataset」で「YOLO 1.1」を選んで書き出し、`cvat-import` で取り込む → 分割 → Colab で学習し、`best.pt` を `models/batch1.pt` として置く
+
+**2回目(200枚)**
+7. `python scripts/prepare_dataset.py cvat-export data/dataset/raw --n 200 --zip data/dataset/cvat_batch2.zip --weights models/batch1.pt --profile ottawa2026 --exclude data/dataset/cvat_batch1`
+8. 3〜6 と同様に修正・取り込みを行い、1回目と合わせて学習し直す
 
 ## 試合名の付け方
 
