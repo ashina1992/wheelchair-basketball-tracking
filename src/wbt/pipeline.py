@@ -13,7 +13,7 @@ from .court import court_outline
 from .detect import Detector
 from .events import build_events, compute_stats
 from .profiles import Profile, load_profile
-from .scoreboard import format_clock, read_scoreboard, score_changes, smooth_scoreboard
+from .scoreboard import format_clock, read_scoreboard, score_changes, shot_clock_resets, smooth_scoreboard
 from .spacing import possessions
 from .teams import assign_teams, floor_color, torso_color
 from .tracking import BallTracker, PlayerTracker, interpolate_ball
@@ -66,18 +66,19 @@ def analyze(video: Path, profile: Profile | str, weights: str = "yolov8s.pt", ta
     prev_hist, prev_wide, segment = None, False, 0
     next_ocr = 0.0
 
-    seek = stride > 8   # 間引きが大きいときはシーク、小さいときは grab で読み飛ばす方が速い
+    # フレーム番号でのシークは可変フレームレートの動画(画面録画)で数フレームずれるため、常に先頭から順に読む。
+    # 時刻もフレーム番号/平均fps ではなく、動画に記録されたタイムスタンプを使う(長い動画ほど差が開くため)
     for idx in range(0, total, stride):
-        if seek:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
         ok, frame = cap.read()
         if not ok:
+            break
+        t = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000
+        if max_seconds and t > max_seconds:
             break
         x0, y0, x1, y1 = crop
         frame = frame[y0:y1, x0:x1]
         if frame.shape[1] != prof.frame_size[0]:
             frame = cv2.resize(frame, tuple(prof.frame_size))
-        t = idx / fps
 
         det = detector(frame)
         h = _hist(frame)
@@ -119,18 +120,18 @@ def analyze(video: Path, profile: Profile | str, weights: str = "yolov8s.pt", ta
             rec["zoom"] = round(zoom, 3)
             rec["keyframe"] = prof.keyframes[st.keyframe].name
         if t >= next_ocr:
-            readings.append({"t": round(t, 3), **read_scoreboard(frame, rois)})
+            readings.append({"t": round(t, 3), **read_scoreboard(frame, rois, prof.digits)})
             next_ocr = t + OCR_INTERVAL
         frames.append(rec)
         progress("analyzing", idx / max(total, 1))
 
-        if not seek:
-            for _ in range(stride - 1):
-                cap.grab()
+        for _ in range(stride - 1):
+            cap.grab()
     cap.release()
 
     progress("events", 0.95)
     series = smooth_scoreboard(readings)
+    resets = shot_clock_resets(series)
     _drop_hidden_scoreboard(frames, series)
 
     team_colors = {t.id: t.color for t in prof.teams if t.color}
@@ -141,7 +142,7 @@ def analyze(video: Path, profile: Profile | str, weights: str = "yolov8s.pt", ta
     interpolate_ball(frames)
 
     changes = score_changes(series)
-    events, stints = build_events(frames, changes)
+    events, stints = build_events(frames, changes, series, resets)
     stats = compute_stats(events)
     poss = possessions(frames, stints)
 
@@ -156,6 +157,7 @@ def analyze(video: Path, profile: Profile | str, weights: str = "yolov8s.pt", ta
         "segments": _segments(frames),
         "frames": frames,
         "scoreboard": [{**r, "clock": format_clock(r["clock"])} for r in series],
+        "shot_clock_resets": resets,
         "events": [_public_event(e) for e in events],
         "stats": stats,
         "possessions": poss,

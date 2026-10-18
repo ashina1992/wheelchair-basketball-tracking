@@ -1,6 +1,6 @@
 """ボール保持の推定とイベント判定(ルールベース)。
 
-入力はパイプラインが作るフレーム列(`analysis.json` の frames と同じ形)と、スコアボードの得点変化。
+入力はパイプラインが作るフレーム列(`analysis.json` の frames と同じ形)と、スコアボードの得点変化・ショットクロック。
 判定ルールは docs/design.md 2.2 を参照。
 """
 from dataclasses import dataclass
@@ -19,6 +19,7 @@ SCORE_DELAY = (-1.0, 6.0)  # シュートから得点表示が変わるまでの
 REBOUND_WINDOW = 6.0
 ASSIST_WINDOW = 3.0
 TURNOVER_GAP = 3.0
+TEAM_MIN_HOLD = 1.0       # 保持チームの交代とみなすのに必要な、新しいチームの連続保持時間
 
 
 @dataclass
@@ -119,11 +120,52 @@ def detect_shots(frames: list[dict], stints: list[Stint]) -> list[dict]:
     return shots
 
 
-def build_events(frames: list[dict], score_changes: list[dict]) -> tuple[list[dict], list[Stint]]:
+def _team_around(stints: list[Stint], frames: list[dict], t0: float, t1: float, min_hold: float = 0.5) -> str | None:
+    """[t0, t1] の間に最も長くボールを保持していたチーム(合計 min_hold 秒未満なら None)。"""
+    hold: dict[str, float] = {}
+    for s in stints:
+        a, b = max(frames[s.start]["t"], t0), min(frames[s.end]["t"], t1)
+        if b > a:
+            hold[s.team] = hold.get(s.team, 0.0) + (b - a)
+    if not hold:
+        return None
+    team, dur = max(hold.items(), key=lambda kv: kv[1])
+    return team if dur >= min_hold else None
+
+
+def _shot_clock_seen(scoreboard: list[dict] | None, t0: float, t1: float) -> bool:
+    """[t0, t1] にショットクロックの有効な読みがあるか(=ショットクロックで判定できる区間か)。"""
+    return bool(scoreboard) and any(r.get("shot_clock") is not None and t0 <= r["t"] <= t1 for r in scoreboard)
+
+
+def _other(team: str) -> str:
+    return "b" if team == "a" else "a"
+
+
+def build_events(frames: list[dict], score_changes: list[dict], scoreboard: list[dict] | None = None,
+                 resets: list[dict] | None = None) -> tuple[list[dict], list[Stint]]:
+    """イベントを判定する。
+
+    scoreboard(ショットクロックの読みを含む系列)と resets(ショットクロックのリセット)があれば、
+    保持の交代をショットクロックで裏付ける。映像だけでは、攻守の選手が密着した場面で保持者の判定が
+    入れ替わりやすく、ターンオーバーを過検出する(Japan v Poland で確認)。
+    - ターンオーバー: 24 秒へのリセットがあるときだけ確定する
+    - リバウンド: シュート失敗後に 14 秒へ戻ればオフェンス、24 秒へ戻ればディフェンス(FIBA ルール)
+    - シュートのチーム: 直前に保持していた選手ではなく、その攻撃中に長く保持していたチーム
+    ショットクロックが読めない区間では、映像だけのルールで判定する。
+    """
+    resets = resets or []
     stints = find_stints(frames)
     shots = detect_shots(frames, stints)
     events = []
     used_changes = set()
+
+    # シュートのチームを、その攻撃中に最も長く保持していたチームで補正する(保持者の判定は守備側に揺れやすい)
+    for s in shots:
+        if _shot_clock_seen(scoreboard, s["t"] - 8, s["t"] + 1):
+            team = _team_around(stints, frames, s["t"] - 8, s["t"])
+            if team is not None and team != s["team"]:
+                s["team"], s["player"], s["court"], s["stint"] = team, None, None, None
 
     # シュート試投と得点変化の対応付け
     for s in shots:
@@ -161,14 +203,41 @@ def build_events(frames: list[dict], score_changes: list[dict]) -> tuple[list[di
                        "player": st.player if st else None, "court": loc, "distance": None,
                        "source": "scoreboard", "confidence": 0.8, "stint": st})
 
-    # リバウンド: シュート失敗後、最初に保持したチーム
-    for e in [e for e in events if e["type"] == "missed_shot"]:
+    # 14 秒へのリセットで、映像では捉えられなかったシュート失敗+オフェンスリバウンドを補う
+    for r in [r for r in resets if r["to"] == 14]:
+        if any(r["t"] - 8 <= e["t"] <= r["t"] for e in events if e["type"] in ("missed_shot", "made_shot")):
+            continue
+        team = _team_around(stints, frames, r["t"] - 8, r["t"])
+        if team is not None:
+            events.append({"t": r["t"] - 1.0, "type": "missed_shot", "team": team, "points": 2, "player": None,
+                           "court": None, "distance": None, "source": "shot_clock", "confidence": 0.5,
+                           "stint": None, "frame": _frame_at(frames, r["t"] - 1.0)})
+
+    # リバウンド
+    for e in sorted([e for e in events if e["type"] == "missed_shot"], key=lambda e: e["t"]):
+        if _shot_clock_seen(scoreboard, e["t"], e["t"] + REBOUND_WINDOW + 2):
+            rs = [r for r in resets if e["t"] - 0.5 < r["t"] <= e["t"] + REBOUND_WINDOW + 2]
+            if not rs:
+                # リングに当たったシュートの後はショットクロックが必ずリセットされる。
+                # リセットがないなら、シュートではなかった(リング付近へのパス等)とみなす
+                e["discard"] = True
+                continue
+            r = rs[0]
+            offensive = r["to"] == 14
+            team = e["team"] if offensive else _other(e["team"])
+            st = next((s for s in stints if s.team == team and frames[s.start]["t"] >= e["t"]
+                       and frames[s.start]["t"] <= r["t"] + 2), None)
+            events.append({"t": r["t"], "type": "rebound", "team": team, "player": st.player if st else None,
+                           "offensive": offensive, "court": _player_court(frames[st.start], st.player) if st else None,
+                           "source": "vision+shot_clock", "confidence": 0.7, "stint": st})
+            continue
         after = [s for s in stints if s.start > e["frame"] and frames[s.start]["t"] - e["t"] <= REBOUND_WINDOW]
         if after:
             s = after[0]
             events.append({"t": frames[s.start]["t"], "type": "rebound", "team": s.team, "player": s.player,
                            "offensive": s.team == e["team"], "court": _player_court(frames[s.start], s.player),
                            "source": "vision", "confidence": 0.5, "stint": s})
+    events = [e for e in events if not e.get("discard")]
 
     # アシスト: 成功シュートの直前に同じチームの別の選手から受けていた
     for e in [e for e in events if e["type"] == "made_shot" and e["stint"] is not None]:
@@ -183,27 +252,42 @@ def build_events(frames: list[dict], score_changes: list[dict]) -> tuple[list[di
                            "court": _player_court(frames[p.end], p.player),
                            "source": "vision", "confidence": 0.4, "stint": p})
 
-    # ターンオーバー: シュートを挟まずに保持チームが相手に変わった
-    shot_frames = [s["frame"] for s in shots]
+    # ターンオーバー: シュートも得点も挟まずに、保持チームが相手に変わった
+    shot_ts = [e["t"] for e in events if e["type"] in ("missed_shot", "made_shot")]
     change_ts = [c["t"] for c in score_changes]
-    for p, q in zip(stints, stints[1:]):
+    for k, (p, q) in enumerate(zip(stints, stints[1:])):
         if p.team == q.team or p.segment != q.segment:
             continue
         t0, t1 = frames[p.end]["t"], frames[q.start]["t"]
         if t1 - t0 > TURNOVER_GAP:
             continue
-        if any(p.end <= f <= q.start for f in shot_frames):
+        if any(t0 - 1 <= t <= t1 for t in shot_ts) or any(t0 - 2 <= t <= t1 + 3 for t in change_ts):
             continue
-        if any(t0 - 2 <= t <= t1 + 3 for t in change_ts):
+        # 相手チームが1秒以上保持し続けたときだけ、保持の交代とみなす(ボールの奪い合い中の一瞬の接触を除く)
+        end = q.end
+        for s in stints[k + 2:]:
+            if s.team != q.team:
+                break
+            end = s.end
+        if frames[end]["t"] - t1 < TEAM_MIN_HOLD:
             continue
+        source, conf = "vision", 0.4
+        if _shot_clock_seen(scoreboard, t0 - 3, t1 + 4):
+            if not any(r["to"] == 24 and t0 - 1 <= r["t"] <= t1 + 3 for r in resets):
+                continue   # ショットクロックが続いている = 保持は変わっていない
+            source, conf = "vision+shot_clock", 0.7
         events.append({"t": t0, "type": "turnover", "team": p.team, "player": p.player,
-                       "court": _player_court(frames[p.end], p.player), "source": "vision",
-                       "confidence": 0.4, "stint": p, "recovered_by": {"team": q.team, "player": q.player}})
+                       "court": _player_court(frames[p.end], p.player), "source": source,
+                       "confidence": conf, "stint": p, "recovered_by": {"team": q.team, "player": q.player}})
 
     events.sort(key=lambda e: e["t"])
     for n, e in enumerate(events, 1):
         e["id"] = n
     return events, stints
+
+
+def _frame_at(frames: list[dict], t: float) -> int:
+    return int(np.argmin([abs(f["t"] - t) for f in frames])) if frames else 0
 
 
 def compute_stats(events: list[dict], team_ids=("a", "b")) -> dict:

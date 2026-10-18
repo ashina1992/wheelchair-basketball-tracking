@@ -58,10 +58,70 @@ def test_missed_shot_then_defensive_rebound():
 def test_steal_is_turnover():
     a1, b1 = player(1, "a", 400), player(11, "b", 500)
     ps = [a1, b1]
-    script = [(a1, ps)] * 5 + [([480, 640], ps)] + [(b1, ps)] * 5
+    script = [(a1, ps)] * 5 + [([480, 640], ps)] + [(b1, ps)] * 12
     events, _ = build_events(build(script), [])
     to = [e for e in events if e["type"] == "turnover"]
     assert len(to) == 1 and to[0]["team"] == "a" and to[0]["recovered_by"]["team"] == "b"
+
+
+def test_brief_touch_by_defender_is_not_turnover():
+    """守備側が0.5秒だけ保持者と判定されても(密着した場面の揺れ)、ターンオーバーにしない。"""
+    a1, b1 = player(1, "a", 400), player(11, "b", 500)
+    ps = [a1, b1]
+    script = [(a1, ps)] * 8 + [(b1, ps)] * 5 + [(a1, ps)] * 8
+    events, _ = build_events(build(script), [])
+    assert not [e for e in events if e["type"] == "turnover"]
+
+
+def clock(ts_values):
+    return [{"t": t, "shot_clock": v} for t, v in ts_values]
+
+
+def test_turnover_requires_shot_clock_reset_when_clock_is_visible():
+    a1, b1 = player(1, "a", 400), player(11, "b", 500)
+    ps = [a1, b1]
+    frames = build([(a1, ps)] * 5 + [([480, 640], ps)] + [(b1, ps)] * 15)
+    running = clock([(t / 2, 20 - t / 2) for t in range(0, 6)])          # 止まらずに減り続けている
+    events, _ = build_events(frames, [], running, [])
+    assert not [e for e in events if e["type"] == "turnover"]
+    reset = clock([(0.0, 20), (0.5, 19.5), (1.0, 24), (1.5, 23.5), (2.0, 23)])
+    events, _ = build_events(frames, [], reset, [{"t": 0.75, "to": 24}])
+    to = [e for e in events if e["type"] == "turnover"]
+    assert len(to) == 1 and to[0]["source"] == "vision+shot_clock"
+
+
+def _shot_frames():
+    a1, b1 = player(1, "a", 800), player(11, "b", 1200, 700)
+    ps = [a1, b1]
+    return build([(a1, ps)] * 30 + [([1000, 450], ps), ([1290, 290], ps), ([1250, 500], ps)] + [(None, ps)] * 50)
+
+
+def test_rebound_from_shot_clock_reset():
+    frames = _shot_frames()   # 3.1 秒にシュート
+    sb = clock([(t / 2, 10) for t in range(0, 14)])
+    oreb, _ = build_events(frames, [], sb, [{"t": 4.0, "to": 14}])
+    r = [e for e in oreb if e["type"] == "rebound"]
+    assert len(r) == 1 and r[0]["team"] == "a" and r[0]["offensive"]
+    dreb, _ = build_events(frames, [], sb, [{"t": 4.0, "to": 24}])
+    r = [e for e in dreb if e["type"] == "rebound"]
+    assert len(r) == 1 and r[0]["team"] == "b" and not r[0]["offensive"]
+
+
+def test_shot_without_reset_is_discarded_when_clock_is_visible():
+    """リングに当たればショットクロックは必ずリセットされる。リセットがなければシュートではなかったとみなす。"""
+    frames = _shot_frames()
+    sb = clock([(t / 2, 20 - t / 2) for t in range(0, 20)])
+    events, _ = build_events(frames, [], sb, [])
+    assert not [e for e in events if e["type"] in ("missed_shot", "rebound")]
+
+
+def test_oreb_reset_adds_missed_shot_not_seen_on_video():
+    a1 = player(1, "a", 400)
+    frames = build([(a1, [a1])] * 60)
+    sb = clock([(t / 2, 10) for t in range(0, 14)])
+    events, _ = build_events(frames, [], sb, [{"t": 5.5, "to": 14}])
+    kinds = [(e["type"], e["team"], e["source"]) for e in events]
+    assert ("missed_shot", "a", "shot_clock") in kinds and ("rebound", "a", "vision+shot_clock") in kinds
 
 
 def test_possession_change_after_score_is_not_turnover():

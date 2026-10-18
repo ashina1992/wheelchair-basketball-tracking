@@ -1,4 +1,4 @@
-"""会場プロファイル(スコアボードの位置、チーム色、校正済みキーフレーム)の読み書き。"""
+"""会場プロファイル(スコアボードの位置と数字の見本、チーム色、校正済みキーフレーム)の読み書き。"""
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -26,6 +26,7 @@ class Profile:
     teams: list[Team]
     keyframes: list[Keyframe] = field(default_factory=list)
     path: Path | None = None
+    digits: object | None = None          # スコアボードの数字の見本(wbt.digits.DigitReader)
 
 
 def load_profile(name_or_path: str | Path) -> Profile:
@@ -43,7 +44,11 @@ def load_profile(name_or_path: str | Path) -> Profile:
         side = 1 if cx > 0 else -1
         kfs.append(Keyframe(k["name"], H, np.float64(k["rims"]),
                             load_keyframe_features(p.parent / k["features"]), side))
-    return Profile(d["name"], tuple(d["frame_size"]), d["scoreboard"], teams, kfs, p)
+    digits = None
+    if d.get("digits"):   # scripts/build_digit_templates.py で作成
+        from .digits import DigitReader
+        digits = DigitReader.load(p.parent / d["digits"])
+    return Profile(d["name"], tuple(d["frame_size"]), d["scoreboard"], teams, kfs, p, digits)
 
 
 def list_profiles() -> list[str]:

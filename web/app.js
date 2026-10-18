@@ -11,7 +11,10 @@ const EVENT_LABELS = {
   assist: "アシスト",
   turnover: "ターンオーバー",
 };
-const SOURCE_LABELS = { scoreboard: "得点表示", vision: "映像", "vision+scoreboard": "映像+得点表示" };
+const SOURCE_LABELS = {
+  scoreboard: "得点表示", vision: "映像", "vision+scoreboard": "映像+得点表示",
+  shot_clock: "ショットクロック", "vision+shot_clock": "映像+ショットクロック",
+};
 const STAT_COLS = [
   ["PTS", "得点"], ["FG", "FG"], ["3P", "3P"], ["FTM", "FT"], ["OREB", "OR"], ["DREB", "DR"], ["AST", "AST"], ["TOV", "TO"],
 ];

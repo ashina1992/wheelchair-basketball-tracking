@@ -44,6 +44,23 @@ def test_score_changes():
     assert [(c["t"], c["team"], c["points"]) for c in ch] == [(2, "a", 2), (5, "b", 3)]
 
 
+def test_stable_shot_clock_rejects_misreads_and_keeps_resets():
+    # Japan v Poland の実際の読みに近い列: 29(20 の誤読)、19(15 の誤読)、14 へのリセット直前の 24(誤読)
+    ts = [9.5, 10.1, 10.6, 11.1, 14.9, 15.4, 15.9, 16.5, 30.3, 30.8, 31.3, 31.9, 32.4]
+    raw = [20, None, None, 19, 15, 15, 19, 14, 5, 5, 24, 14, 13]
+    from wbt.scoreboard import _stable_shot_clock, shot_clock_resets
+    out = _stable_shot_clock(ts, raw)
+    assert out == [20, None, None, 19, 15, 15, None, 14, 5, 5, None, 14, 13]
+    resets = shot_clock_resets([{"t": t, "shot_clock": v} for t, v in zip(ts, out)])
+    assert resets == [{"t": 31.35, "to": 14}]
+
+
+def test_shot_clock_reset_to_24_detected_from_23():
+    from wbt.scoreboard import shot_clock_resets
+    series = [{"t": 0.0, "shot_clock": 6}, {"t": 0.5, "shot_clock": None}, {"t": 1.0, "shot_clock": 23}]
+    assert shot_clock_resets(series) == [{"t": 0.5, "to": 24}]
+
+
 def test_format_clock():
     assert format_clock(440) == "7:20"
     assert format_clock(59.9) == "59.9"

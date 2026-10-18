@@ -1,4 +1,4 @@
-"""スコアボード(得点・試合時計)の OCR と、時間方向の整合チェック。"""
+"""スコアボード(得点・試合時計・ショットクロック)の読み取りと、時間方向の整合チェック。"""
 import re
 import shutil
 from pathlib import Path
@@ -54,15 +54,84 @@ def clock_candidates(s: str) -> list[tuple[float, float]]:
     return sorted(cands.items())
 
 
-def read_scoreboard(frame: np.ndarray, rois: dict) -> dict:
+SHOT_CLOCK_MAX = 24
+OREB_RESET = 14   # FIBA: オフェンスリバウンド等ではショットクロックが 14 秒に戻る
+
+
+def read_scoreboard(frame: np.ndarray, rois: dict, digits=None) -> dict:
+    """得点・試合時計・ショットクロックを読む。digits(wbt.digits.DigitReader)があればショットクロックに使う。"""
     a = _ocr(frame, rois["score_a"], "0123456789")
     b = _ocr(frame, rois["score_b"], "0123456789")
     c = _ocr(frame, rois["clock"], "0123456789:.") if "clock" in rois else ""
+    shot = None
+    if "shot_clock" in rois:
+        x0, y0, x1, y1 = rois["shot_clock"]
+        s = digits.read(frame[y0:y1, x0:x1]) if digits is not None else _ocr(frame, rois["shot_clock"], "0123456789")
+        if s.isdigit() and int(s) <= SHOT_CLOCK_MAX:
+            shot = int(s)
     return {
         "score_a": int(a) if a.isdigit() and len(a) <= 3 else None,
         "score_b": int(b) if b.isdigit() and len(b) <= 3 else None,
         "clock_candidates": clock_candidates(c),
+        "shot_clock": shot,
     }
+
+
+def _stable_shot_clock(ts: list[float], values: list[int | None], tol: float = 1.5) -> list[int | None]:
+    """ショットクロックの読みから、時間の流れと整合する値だけを残す。
+
+    - 直前に採用した値から見て「止まっている」か「経過時間だけ減った」値はそのまま採用する
+    - 増えた値はリセット(24 か 14 に戻った)とみなすが、次の読みがその値から整合するときだけ採用する
+      (1回だけの誤読をリセットと取り違えないため)
+    """
+    n = len(values)
+    out: list[int | None] = [None] * n
+    prev_t, prev_v = None, None
+    idx = [i for i in range(n) if values[i] is not None]
+    for k, i in enumerate(idx):
+        v, t = values[i], ts[i]
+
+        def confirmed_by_next():
+            for j in idx[k + 1:k + 3]:
+                dt = ts[j] - t
+                if dt > 3.0:
+                    break
+                if abs(values[j] - v) <= tol or abs(values[j] - (v - dt)) <= tol:
+                    return True
+            return False
+
+        def plausible_reset(dt):
+            # リセット後の値は 24 か 14 から、前の読みからの経過時間以内しか減っていないはず
+            return any(0 <= r - v <= dt + tol for r in (SHOT_CLOCK_MAX, OREB_RESET))
+
+        if prev_v is None:
+            if confirmed_by_next():
+                out[i], prev_t, prev_v = v, t, v
+            continue
+        dt = t - prev_t
+        if abs(v - prev_v) <= tol or abs(v - (prev_v - dt)) <= tol or (v < prev_v and prev_v - v <= dt + tol):
+            out[i], prev_t, prev_v = v, t, v
+        elif v > prev_v + tol and plausible_reset(dt) and confirmed_by_next():
+            out[i], prev_t, prev_v = v, t, v
+    return out
+
+
+def shot_clock_resets(series: list[dict]) -> list[dict]:
+    """ショットクロックが増えた(リセットされた)時刻と、戻った値(24 か 14)を返す。
+
+    読みの間隔があるため、リセット直後の読みは 23 や 13 のこともある。14 を超えていれば 24 へのリセットとみなす。
+    時刻は、リセット前の最後の読みとリセット後の最初の読みの中間とする。
+    """
+    out = []
+    prev = None
+    for r in series:
+        v = r.get("shot_clock")
+        if v is None:
+            continue
+        if prev is not None and v > prev["shot_clock"] + 1.5:
+            out.append({"t": round((prev["t"] + r["t"]) / 2, 2), "to": SHOT_CLOCK_MAX if v > OREB_RESET else OREB_RESET})
+        prev = r
+    return out
 
 
 def _stable_scores(values: list[int | None], persist: int = 2, max_jump: int = 3) -> list[int | None]:
@@ -127,9 +196,10 @@ def smooth_scoreboard(readings: list[dict]) -> list[dict]:
     a = _stable_scores([r["score_a"] for r in readings])
     b = _stable_scores([r["score_b"] for r in readings])
     c = _stable_clock(ts, [r["clock_candidates"] for r in readings])
-    return [{"t": t, "score_a": sa, "score_b": sb, "clock": cl,
+    sc = _stable_shot_clock(ts, [r.get("shot_clock") for r in readings])
+    return [{"t": t, "score_a": sa, "score_b": sb, "clock": cl, "shot_clock": s,
              "visible": r["score_a"] is not None and r["score_b"] is not None}
-            for t, sa, sb, cl, r in zip(ts, a, b, c, readings)]
+            for t, sa, sb, cl, s, r in zip(ts, a, b, c, sc, readings)]
 
 
 def score_changes(series: list[dict]) -> list[dict]:
