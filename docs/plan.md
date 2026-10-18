@@ -80,7 +80,7 @@ CLAUDE.md の「機能ロードマップ」を、実行できる単位(フェー
 - [x] 試合映像を5試合集める(男子3・女子2、会場2か所、2560x1440)。候補フレーム 972 枚を抽出済み
 - [x] 1回目の100枚を選び、下書きを作成(`data/dataset/cvat_batch1`、yolov8x+会場の校正)
 - [x] 1回目: CVAT で100枚を修正 → `cvat-import` → `split`(val: Canada_v_USA_women、test: USA_v_Japan_men)→ Colab で学習 → `models/batch1.pt`。test で player AP50 0.24→0.95、ball 0.004→0.96(既製 yolov8s 比)→ `docs/02_dataset.md`、`docs/03_finetune.md`
-- [x] 2回目の200枚の下書きを `batch1.pt` で作成(`data/dataset/cvat_batch2`)
+- [x] 2回目の200枚の下書きを `batch1.pt` で作成し、修正・取り込み(合計300枚: train 180 / val 60 / test 60)
 - [ ] 2回目: `batch1.pt` で下書きを作った200枚を修正 → 合計300枚で学習し直す(yolov8s 基本、n/m と比較)。`eval_detector.py` で既製モデルと比較
 - [ ] 誤りを分析し、苦手なシーンを中心に追加 → 再学習
 - [ ] 学習ログ・評価結果を `docs/02_dataset.md`、`docs/03_finetune.md` にまとめる

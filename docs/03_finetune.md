@@ -11,6 +11,13 @@
 - imgsz 1280、100 エポック、batch 8、cos_lr、左右反転あり・上下反転なし
 - Google Colab(T4)、`notebooks/01_train_detector.ipynb`
 
+### 学習曲線
+
+![1回目の学習曲線](images/batch1_results.png)
+
+- 最初の 20 エポックほどは不安定(学習率のウォームアップ中で、データも少ないため)。50 エポック付近で収束し、val の mAP50 は約 0.97、mAP50-95 は約 0.69 で頭打ち
+- val の損失は学習の損失とともに下がった後に横ばいで、過学習の兆候はない
+
 ### test セットでの評価
 
 `python scripts/eval_detector.py data/dataset/yolo --split test --weights yolov8s.pt yolov8x.pt models/batch1.pt`
