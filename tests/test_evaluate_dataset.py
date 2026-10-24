@@ -53,6 +53,14 @@ def test_suppress_contained_keeps_box_when_container_is_weak():
     assert keep.tolist() == [True, True]
 
 
+def test_estimate_offset_recovers_constant_delay():
+    from wbt.evaluate import estimate_offset
+    pred = [{"t": t, "type": "missed_shot", "team": "a"} for t in (10.0, 30.0, 50.0, 70.0)]
+    gt = [{"t": t + 1.6, "type": "missed_shot", "team": "a"} for t in (10.0, 30.0, 50.0, 70.0)]
+    off = estimate_offset(pred, gt, tol=0.5)
+    assert abs(off + 1.6) <= 0.5
+
+
 def test_yolo_roundtrip():
     lines = to_yolo_lines([("ball", np.array([100, 50, 120, 70]))], 1920, 1080)
     assert lines[0].startswith("1 ")

@@ -66,6 +66,25 @@ def detection_report(all_preds: dict[int, list[tuple[int, float, np.ndarray]]],
     return out
 
 
+def estimate_offset(pred: list[dict], gt: list[dict], tol: float = 2.0, types=None,
+                    search=(-5.0, 5.0), step: float = 0.1) -> float:
+    """正解の時刻に一定のずれ(秒)があるとき、対応付けの件数が最大になるずれを返す。
+
+    公式記録の時刻は中継画面の試合時計から動画の時刻に変換しているが、中継の時計表示はプレーより
+    遅れることがある。そのずれを、イベントの種別を問わず全体で1つの定数として推定する(種別ごとの
+    合わせ込みはしない)。件数が同じなら、ずれの絶対値が小さい方を選ぶ。
+    """
+    best = (-1, 0.0)
+    n = int(round((search[1] - search[0]) / step))
+    for k in range(n + 1):
+        off = round(search[0] + k * step, 2)
+        shifted = [{**e, "t": e["t"] + off} for e in gt]
+        tp = sum(m["tp"] for m in match_events(pred, shifted, tol, types).values())
+        if tp > best[0] or (tp == best[0] and abs(off) < abs(best[1])):
+            best = (tp, off)
+    return best[1]
+
+
 def match_events(pred: list[dict], gt: list[dict], tol: float = 2.0, types=None) -> dict:
     """イベントを種別・チームが一致し、時刻差が tol 秒以内のもの同士で1対1に対応付け、種別ごとの P/R を返す。"""
     types = types or sorted({e["type"] for e in gt} | {e["type"] for e in pred})

@@ -1,0 +1,41 @@
+{
+  "offset": -1.4,
+  "tol": 2.0,
+  "report": {
+    "made_shot": {
+      "tp": 0,
+      "n_pred": 5,
+      "n_gt": 5,
+      "precision": 0.0,
+      "recall": 0.0
+    },
+    "missed_shot": {
+      "tp": 6,
+      "n_pred": 12,
+      "n_gt": 10,
+      "precision": 0.5,
+      "recall": 0.6
+    },
+    "rebound": {
+      "tp": 5,
+      "n_pred": 12,
+      "n_gt": 11,
+      "precision": 0.4166666666666667,
+      "recall": 0.45454545454545453
+    },
+    "assist": {
+      "tp": 0,
+      "n_pred": 1,
+      "n_gt": 5,
+      "precision": 0.0,
+      "recall": 0.0
+    },
+    "turnover": {
+      "tp": 0,
+      "n_pred": 2,
+      "n_gt": 2,
+      "precision": 0.0,
+      "recall": 0.0
+    }
+  }
+}

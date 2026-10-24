@@ -38,9 +38,12 @@ def _inside(pt, poly) -> bool:
 
 
 def analyze(video: Path, profile: Profile | str, weights: str = "yolov8s.pt", target_fps: float = 10.0,
-            max_seconds: float | None = None, progress: Progress | None = None) -> dict:
+            max_seconds: float | None = None, progress: Progress | None = None, teams: list | None = None) -> dict:
+    """teams: この試合のチーム(wbt.profiles.Team、スコアボードの左・右の順)。省略時は会場プロファイルの値。"""
     progress = progress or (lambda stage, frac: None)
     prof = load_profile(profile) if isinstance(profile, str) else profile
+    if teams:
+        prof.teams = teams
     t_start = time.time()
 
     cap = cv2.VideoCapture(str(video))
@@ -130,9 +133,7 @@ def analyze(video: Path, profile: Profile | str, weights: str = "yolov8s.pt", ta
     cap.release()
 
     progress("events", 0.95)
-    series = smooth_scoreboard(readings)
-    resets = shot_clock_resets(series)
-    _drop_hidden_scoreboard(frames, series)
+    _drop_hidden_scoreboard(frames, smooth_scoreboard(readings))
 
     team_colors = {t.id: t.color for t in prof.teams if t.color}
     teams = assign_teams(track_obs, team_colors or None)
@@ -140,11 +141,6 @@ def analyze(video: Path, profile: Profile | str, weights: str = "yolov8s.pt", ta
         for p in fr["players"]:
             p["team"] = teams.get(p["id"], "other")
     interpolate_ball(frames)
-
-    changes = score_changes(series)
-    events, stints = build_events(frames, changes, series, resets)
-    stats = compute_stats(events)
-    poss = possessions(frames, stints)
 
     result = {
         "version": 1,
@@ -156,14 +152,52 @@ def analyze(video: Path, profile: Profile | str, weights: str = "yolov8s.pt", ta
         "teams": [{"id": t.id, "name": t.name, "color": list(t.color) if t.color else None} for t in prof.teams],
         "segments": _segments(frames),
         "frames": frames,
-        "scoreboard": [{**r, "clock": format_clock(r["clock"])} for r in series],
-        "shot_clock_resets": resets,
-        "events": [_public_event(e) for e in events],
-        "stats": stats,
-        "possessions": poss,
     }
+    finish_events(result, readings)
     progress("done", 1.0)
     return result
+
+
+def finish_events(result: dict, readings: list[dict]):
+    """スコアボードの読み(生の値)とフレーム列から、イベント・スタッツ・攻撃区間を求めて result に書き込む。
+
+    検出・追跡を終えた解析結果に対して、判定ルールやスコアボードの読み取りだけをやり直すときにも使う
+    (scripts/rebuild_events.py)。
+    """
+    series = smooth_scoreboard(readings)
+    resets = shot_clock_resets(series)
+    frames = result["frames"]
+    events, stints = build_events(frames, score_changes(series), series, resets)
+    result["scoreboard"] = [{**r, "clock": format_clock(r["clock"])} for r in series]
+    result["shot_clock_resets"] = resets
+    result["events"] = [_public_event(e) for e in events]
+    result["stats"] = compute_stats(events)
+    result["possessions"] = possessions(frames, stints)
+
+
+def read_scoreboard_series(video: Path, prof: Profile, crop, interval: float = OCR_INTERVAL,
+                           max_seconds: float | None = None) -> list[dict]:
+    """動画全体のスコアボードを interval 秒おきに読む(検出は行わない)。"""
+    cap = cv2.VideoCapture(str(video))
+    readings, next_t = [], 0.0
+    while True:
+        ok = cap.grab()
+        if not ok:
+            break
+        t = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000
+        if max_seconds and t > max_seconds:
+            break
+        if t < next_t:
+            continue
+        _, frame = cap.retrieve()
+        x0, y0, x1, y1 = crop
+        frame = frame[y0:y1, x0:x1]
+        if frame.shape[1] != prof.frame_size[0]:
+            frame = cv2.resize(frame, tuple(prof.frame_size))
+        readings.append({"t": round(t, 3), **read_scoreboard(frame, prof.scoreboard, prof.digits)})
+        next_t = t + interval
+    cap.release()
+    return readings
 
 
 def _drop_hidden_scoreboard(frames: list[dict], series: list[dict]):

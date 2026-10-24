@@ -61,6 +61,15 @@ def test_shot_clock_reset_to_24_detected_from_23():
     assert shot_clock_resets(series) == [{"t": 0.5, "to": 24}]
 
 
+def test_transitional_reset_14_then_24_is_merged():
+    """リングに当たった直後に一瞬 14 が表示されてから 24 になる場合は、24 へのリセット1回とみなす。"""
+    from wbt.scoreboard import shot_clock_resets
+    series = [{"t": 0.0, "shot_clock": 6}, {"t": 0.5, "shot_clock": 14}, {"t": 1.0, "shot_clock": 14},
+              {"t": 1.5, "shot_clock": 24}, {"t": 2.0, "shot_clock": 24}, {"t": 6.0, "shot_clock": 20},
+              {"t": 6.5, "shot_clock": 14}]
+    assert shot_clock_resets(series) == [{"t": 0.25, "to": 24}]
+
+
 def test_format_clock():
     assert format_clock(440) == "7:20"
     assert format_clock(59.9) == "59.9"

@@ -115,6 +115,19 @@ def test_shot_without_reset_is_discarded_when_clock_is_visible():
     assert not [e for e in events if e["type"] in ("missed_shot", "rebound")]
 
 
+def test_reset_used_by_rebound_cannot_confirm_turnover():
+    """リバウンドの根拠にしたリセットを、直後の保持交代(チーム判定の揺れ)のターンオーバーの根拠に使わない。"""
+    a1, b1 = player(1, "a", 800), player(11, "b", 1200, 700)
+    ps = [a1, b1]
+    script = [(a1, ps)] * 30 + [([1000, 450], ps), ([1290, 290], ps), ([1250, 500], ps)] \
+        + [(None, ps)] * 10 + [(b1, ps)] * 15 + [(a1, ps)] * 15
+    frames = build(script)
+    sb = clock([(t / 2, 10) for t in range(0, 16)])
+    events, _ = build_events(frames, [], sb, [{"t": 4.0, "to": 24}])
+    kinds = [e["type"] for e in events]
+    assert kinds.count("rebound") == 1 and "turnover" not in kinds
+
+
 def test_oreb_reset_adds_missed_shot_not_seen_on_video():
     a1 = player(1, "a", 400)
     frames = build([(a1, [a1])] * 60)

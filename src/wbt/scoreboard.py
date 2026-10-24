@@ -56,17 +56,27 @@ def clock_candidates(s: str) -> list[tuple[float, float]]:
 
 SHOT_CLOCK_MAX = 24
 OREB_RESET = 14   # FIBA: オフェンスリバウンド等ではショットクロックが 14 秒に戻る
+MERGE_SEC = 2.5   # この間隔以内に続いたリセットは1回とみなす(表示の切り替わり途中の値を除く)
 
 
 def read_scoreboard(frame: np.ndarray, rois: dict, digits=None) -> dict:
-    """得点・試合時計・ショットクロックを読む。digits(wbt.digits.DigitReader)があればショットクロックに使う。"""
-    a = _ocr(frame, rois["score_a"], "0123456789")
-    b = _ocr(frame, rois["score_b"], "0123456789")
+    """得点・試合時計・ショットクロックを読む。digits(wbt.digits.DigitReader)があれば得点とショットクロックに使う。
+
+    Tesseract はこのスコアボードのフォントで「7」を「1」と読み、「27」を「21」と誤読することがあった
+    (得点は減らないという整合チェックで捨てられ、得点の変化を取りこぼした)。
+    """
+    def read_digits(key):
+        if digits is None:
+            return _ocr(frame, rois[key], "0123456789")
+        x0, y0, x1, y1 = rois[key]
+        return digits.read(frame[y0:y1, x0:x1])
+
+    a = read_digits("score_a")
+    b = read_digits("score_b")
     c = _ocr(frame, rois["clock"], "0123456789:.") if "clock" in rois else ""
     shot = None
     if "shot_clock" in rois:
-        x0, y0, x1, y1 = rois["shot_clock"]
-        s = digits.read(frame[y0:y1, x0:x1]) if digits is not None else _ocr(frame, rois["shot_clock"], "0123456789")
+        s = read_digits("shot_clock")
         if s.isdigit() and int(s) <= SHOT_CLOCK_MAX:
             shot = int(s)
     return {
@@ -121,6 +131,10 @@ def shot_clock_resets(series: list[dict]) -> list[dict]:
 
     読みの間隔があるため、リセット直後の読みは 23 や 13 のこともある。14 を超えていれば 24 へのリセットとみなす。
     時刻は、リセット前の最後の読みとリセット後の最初の読みの中間とする。
+
+    MERGE_SEC 以内に続いたリセットは1回にまとめ、最後の値を採る。リングに当たった直後に一瞬 14 が表示され、
+    1秒ほどで 24 に変わることがある(USA v Japan では、公式記録上すべてディフェンスリバウンドの場面で
+    「14 → 24」が6回あった)。時刻は最初のリセットの時刻とする。
     """
     out = []
     prev = None
@@ -129,9 +143,14 @@ def shot_clock_resets(series: list[dict]) -> list[dict]:
         if v is None:
             continue
         if prev is not None and v > prev["shot_clock"] + 1.5:
-            out.append({"t": round((prev["t"] + r["t"]) / 2, 2), "to": SHOT_CLOCK_MAX if v > OREB_RESET else OREB_RESET})
+            to = SHOT_CLOCK_MAX if v > OREB_RESET else OREB_RESET
+            t = round((prev["t"] + r["t"]) / 2, 2)
+            if out and t - out[-1]["t_last"] <= MERGE_SEC:
+                out[-1]["to"], out[-1]["t_last"] = to, t
+            else:
+                out.append({"t": t, "to": to, "t_last": t})
         prev = r
-    return out
+    return [{"t": x["t"], "to": x["to"]} for x in out]
 
 
 def _stable_scores(values: list[int | None], persist: int = 2, max_jump: int = 3) -> list[int | None]:

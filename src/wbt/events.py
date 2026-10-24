@@ -15,7 +15,7 @@ HOLD_GAP_FRAMES = 3        # 保持中にボールを見失っても保持が続
 RIM_NEAR_PX = 70           # リングの近くとみなす距離
 SHOT_AFTER_HOLD = 2.5      # 保持が解けてからリング付近に達するまでの最大時間
 SHOT_DEDUP = 2.0           # 同じシュートとみなす時間幅
-SCORE_DELAY = (-1.0, 6.0)  # シュートから得点表示が変わるまでの時間の範囲
+SCORE_DELAY = (-1.0, 10.0)  # シュートから得点表示が変わるまでの時間の範囲(USA v Japan では 7〜8 秒遅れた)
 REBOUND_WINDOW = 6.0
 ASSIST_WINDOW = 3.0
 TURNOVER_GAP = 3.0
@@ -213,6 +213,10 @@ def build_events(frames: list[dict], score_changes: list[dict], scoreboard: list
                            "court": None, "distance": None, "source": "shot_clock", "confidence": 0.5,
                            "stint": None, "frame": _frame_at(frames, r["t"] - 1.0)})
 
+    # ショットクロックのリセットは、1回につき1つのイベント(リバウンド、得点後のインバウンド、ターンオーバー)
+    # だけが根拠に使える。同じリセットを複数のイベントの根拠にすると、リバウンドの直後に偽のターンオーバーが出る
+    used_resets: set[int] = set()
+
     # リバウンド
     for e in sorted([e for e in events if e["type"] == "missed_shot"], key=lambda e: e["t"]):
         if _shot_clock_seen(scoreboard, e["t"], e["t"] + REBOUND_WINDOW + 2):
@@ -223,6 +227,7 @@ def build_events(frames: list[dict], score_changes: list[dict], scoreboard: list
                 e["discard"] = True
                 continue
             r = rs[0]
+            used_resets.add(id(r))
             offensive = r["to"] == 14
             team = e["team"] if offensive else _other(e["team"])
             st = next((s for s in stints if s.team == team and frames[s.start]["t"] >= e["t"]
@@ -252,6 +257,12 @@ def build_events(frames: list[dict], score_changes: list[dict], scoreboard: list
                            "court": _player_court(frames[p.end], p.player),
                            "source": "vision", "confidence": 0.4, "stint": p})
 
+    # 得点後は相手チームのインバウンドでショットクロックが 24 秒に戻る。そのリセットは得点の結果として扱う
+    for e in [e for e in events if e["type"] == "made_shot"]:
+        r = next((r for r in resets if r["to"] == 24 and id(r) not in used_resets and e["t"] <= r["t"] <= e["t"] + 15), None)
+        if r is not None:
+            used_resets.add(id(r))
+
     # ターンオーバー: シュートも得点も挟まずに、保持チームが相手に変わった
     shot_ts = [e["t"] for e in events if e["type"] in ("missed_shot", "made_shot")]
     change_ts = [c["t"] for c in score_changes]
@@ -261,7 +272,9 @@ def build_events(frames: list[dict], score_changes: list[dict], scoreboard: list
         t0, t1 = frames[p.end]["t"], frames[q.start]["t"]
         if t1 - t0 > TURNOVER_GAP:
             continue
-        if any(t0 - 1 <= t <= t1 for t in shot_ts) or any(t0 - 2 <= t <= t1 + 3 for t in change_ts):
+        # シュートの直後の保持交代はリバウンドなので除く(シュートの検出時刻はリングに達した時点のため、保持が
+        # 解けた時刻より最大で数秒あとにずれる)
+        if any(t0 - 3 <= t <= t1 + 1 for t in shot_ts) or any(t0 - 2 <= t <= t1 + 3 for t in change_ts):
             continue
         # 相手チームが1秒以上保持し続けたときだけ、保持の交代とみなす(ボールの奪い合い中の一瞬の接触を除く)
         end = q.end
@@ -273,8 +286,11 @@ def build_events(frames: list[dict], score_changes: list[dict], scoreboard: list
             continue
         source, conf = "vision", 0.4
         if _shot_clock_seen(scoreboard, t0 - 3, t1 + 4):
-            if not any(r["to"] == 24 and t0 - 1 <= r["t"] <= t1 + 3 for r in resets):
-                continue   # ショットクロックが続いている = 保持は変わっていない
+            r = next((r for r in resets if r["to"] == 24 and id(r) not in used_resets
+                      and t0 - 1 <= r["t"] <= t1 + 3), None)
+            if r is None:
+                continue   # ショットクロックが続いている(または別のイベントのリセット)= 保持は変わっていない
+            used_resets.add(id(r))
             source, conf = "vision+shot_clock", 0.7
         events.append({"t": t0, "type": "turnover", "team": p.team, "player": p.player,
                        "court": _player_court(frames[p.end], p.player), "source": source,
